@@ -1,0 +1,84 @@
+---
+- name: Set up Apache with HTTP/2, Wireshark, Let's Encrypt, and Mosh on DigitalOcean
+  hosts: all
+  become: yes
+  vars:
+    domain: "http2testing.zapto.org"
+    email: "helloherman@test.com"
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install Apache, Wireshark, Mosh, and other required packages
+      apt:
+        name:
+          - apache2
+          - apache2-utils
+          - wireshark
+          - python3-certbot-apache
+          - mosh
+        state: present
+
+    - name: Enable required Apache modules
+      apache2_module:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - ssl
+        - http2
+        - headers
+        - rewrite
+
+    - name: Create DocumentRoot directory
+      file:
+        path: "/var/www/{{ domain }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: '0755'
+
+    - name: Create a basic index.html
+      copy:
+        content: |
+          <html>
+          <body>
+            <h1>Welcome to {{ domain }}</h1>
+            <p>This page is served over HTTP/HTTPS</p>
+          </body>
+          </html>
+        dest: "/var/www/{{ domain }}/index.html"
+        owner: www-data
+        group: www-data
+        mode: '0644'
+
+    - name: Generate self-signed SSL certificate
+      command: openssl req -x509 -nodes -days 1 -newkey rsa:2048 -keyout /etc/ssl/private/apache-selfsigned.key -out /etc/ssl/certs/apache-selfsigned.crt -subj "/CN={{ domain }}"
+      args:
+        creates: /etc/ssl/certs/apache-selfsigned.crt
+
+    - name: Create Apache virtual host config
+      template:
+        src: vhost.conf.j2
+        dest: /etc/apache2/sites-available/{{ domain }}.conf
+      notify: Reload Apache
+
+    - name: Enable the new site
+      command: a2ensite {{ domain }}.conf
+      notify: Reload Apache
+
+    - name: Disable the default site
+      command: a2dissite 000-default.conf
+      notify: Reload Apache
+
+    - name: Reload Apache to apply changes
+      meta: flush_handlers
+
+    - name: Obtain and install Let's Encrypt certificate
+      command: certbot --apache -d {{ domain }} --non-interactive --agree-tos --email {{ email }} --keep-until-expiring --allow-subset-of-names
+
+  handlers:
+    - name: Reload Apache
+      service:
+        name: apache2
+        state: reloaded
